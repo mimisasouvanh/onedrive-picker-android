@@ -22,17 +22,21 @@
 
 package com.example.onedrivesdk.saversample;
 
-import java.io.*;
-
 import android.app.Activity;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
-import android.os.*;
+import android.os.AsyncTask;
+import android.os.Bundle;
+import android.provider.MediaStore;
+import android.util.Log;
 import android.view.View;
 import android.view.View.OnClickListener;
-import android.widget.*;
+import android.widget.TextView;
 
-import com.microsoft.onedrivesdk.saver.*;
+import com.microsoft.onedrivesdk.saver.ISaver;
+import com.microsoft.onedrivesdk.saver.Saver;
+import com.microsoft.onedrivesdk.saver.SaverException;
 
 /**
  * Activity that shows how the OneDrive SDK can be used for file saving
@@ -41,10 +45,7 @@ import com.microsoft.onedrivesdk.saver.*;
  */
 public class SaverMain extends Activity {
 
-    /**
-     * The default file size
-     */
-    private static final int DEFAULT_FILE_SIZE_KB = 100;
+    public static final int PICK_FROM_GALLERY_REQUEST_CODE = 4;
 
     /**
      * Registered Application id for OneDrive {@see http://go.microsoft.com/fwlink/p/?LinkId=193157}
@@ -57,25 +58,9 @@ public class SaverMain extends Activity {
     private final OnClickListener mStartPickingListener = new OnClickListener() {
         @Override
         public void onClick(final View v) {
-            final Activity activity = (Activity) v.getContext();
-            activity.findViewById(R.id.result_table).setVisibility(View.INVISIBLE);
-
-            final String filename = ((EditText)activity.findViewById(R.id.file_name_edit_text))
-                    .getText().toString();
-            final String fileSizeString = ((EditText)activity.findViewById(R.id.file_size_edit_text))
-                    .getText().toString();
-            int size;
-            try {
-                size = Integer.parseInt(fileSizeString);
-            } catch (final NumberFormatException nfe) {
-                size = DEFAULT_FILE_SIZE_KB;
-            }
-
-            // Create a file
-            final File f = createExternalSdCardFile(filename, size);
-
-            // Start the saver
-            mSaver.startSaving(activity, filename, Uri.parse("file://" + f.getAbsolutePath()));
+            final Intent galleryIntent = new Intent(Intent.ACTION_PICK);
+            galleryIntent.setType("*/*");
+            startActivityForResult(galleryIntent, PICK_FROM_GALLERY_REQUEST_CODE);
         }
     };
 
@@ -98,53 +83,62 @@ public class SaverMain extends Activity {
 
     @Override
     protected void onActivityResult(final int requestCode, final int resultCode, final Intent data) {
-        // Check that we were able to save the file on OneDrive
-        final TextView overallResult = (TextView) findViewById(R.id.overall_result);
-        final TextView errorResult = (TextView) findViewById(R.id.error_type_result);
-        final TextView debugErrorResult = (TextView) findViewById(R.id.debug_error_result);
+        if(requestCode == mSaver.getRequestCode()) {
+            // Check that we were able to save the file on OneDrive
+            final TextView overallResult = (TextView) findViewById(R.id.overall_result);
+            final TextView errorResult = (TextView) findViewById(R.id.error_type_result);
+            final TextView debugErrorResult = (TextView) findViewById(R.id.debug_error_result);
 
-        try {
-            mSaver.handleSave(requestCode, resultCode, data);
-            overallResult.setText(getString(R.string.overall_result_success));
-            errorResult.setText(getString(R.string.error_message_none));
-            debugErrorResult.setText(getString(R.string.error_message_none));
-        } catch (final SaverException e) {
-            overallResult.setText(getString(R.string.overall_result_failure));
-            errorResult.setText(e.getErrorType().toString());
-            debugErrorResult.setText(e.getDebugErrorInfo());
+            try {
+                mSaver.handleSave(requestCode, resultCode, data);
+                overallResult.setText(getString(R.string.overall_result_success));
+                errorResult.setText(getString(R.string.error_message_none));
+                debugErrorResult.setText(getString(R.string.error_message_none));
+            } catch (final SaverException e) {
+                overallResult.setText(getString(R.string.overall_result_failure));
+                errorResult.setText(e.getErrorType().toString());
+                debugErrorResult.setText(e.getDebugErrorInfo());
+            }
+            findViewById(R.id.result_table).setVisibility(View.VISIBLE);
+        } else if(requestCode == PICK_FROM_GALLERY_REQUEST_CODE) {
+            saveFileToDrive(data.getData(), this);
+        } else {
+            Log.e(getClass().getSimpleName(), "Unable to resolve onActivityResult request code " + requestCode);
         }
-        findViewById(R.id.result_table).setVisibility(View.VISIBLE);
+    }
+
+    private void saveFileToDrive(final Uri data, final Activity activity) {
+        new AsyncTask<Void, Void, Void>(){
+            @Override
+            protected Void doInBackground(final Void... voids) {
+                // Create URI from real path
+                final String path = getPathFromUri(data);
+
+                mSaver.startSaving(activity, path, Uri.parse(data.toString()));
+                return null;
+            }
+        }.execute((Void)null);
     }
 
     /**
-     * Creates an file on the SDCard
-     * @param filename The name of the file to create
-     * @param size The size in KB to make the file
-     * @return The {@link File} object that was created
+     * Gets the path from a URI
+     * @param uri The uri fro the item to look up its full path
+     * @return The path
      */
-    private File createExternalSdCardFile(final String filename, final int size) {
-        final int bufferSize = 1024;
-        final int alphabetRange = 'z' - 'a';
-        File file = null;
+    public String getPathFromUri(final Uri uri)
+    {
+        final String[] projection = { MediaStore.Images.Media.DATA };
+        Cursor cursor = null;
         try {
-            file = new File(Environment.getExternalStorageDirectory(), filename);
-            final FileOutputStream fos = new FileOutputStream(file);
-
-            // Create a 1 kb size buffer to use in writing the temp file
-            byte[] buffer = new byte[bufferSize];
-            for (int i = 0; i < buffer.length; i++) {
-                buffer[i] = (byte)('a' + i % alphabetRange);
+            cursor = getContentResolver().query(uri, projection, null, null, null);
+            final int data_column = cursor
+                    .getColumnIndexOrThrow(MediaStore.Images.Media.DATA);
+            cursor.moveToFirst();
+            return cursor.getString(data_column);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
             }
-
-            // Write out the file, 1 kb at a time
-            for (int i = 0; i < size; i++) {
-                fos.write(buffer, 0, buffer.length);
-            }
-
-            fos.close();
-        } catch (final IOException e) {
-            Toast.makeText(this, "Error when creating the file: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
-        return file;
     }
 }
